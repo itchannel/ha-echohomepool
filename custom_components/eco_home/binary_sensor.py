@@ -13,6 +13,11 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import CONF_DEVICE_CODE, DOMAIN
 from .coordinator import EcoHomeCoordinator
 
+_FAULT_MSG_KEYS = (
+    "faultMsg", "fault_msg", "alarmMsg", "alarm_msg", "errorMsg",
+    "error_msg", "faultInfo", "fault_info", "alarmInfo", "alarm_info",
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -41,6 +46,21 @@ class EcoHomeFaultSensor(CoordinatorEntity[EcoHomeCoordinator], BinarySensorEnti
     @property
     def is_on(self) -> bool:
         return bool(self.coordinator.data.get("isFault", False))
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        data = self.coordinator.data
+        attrs: dict = {}
+        for key in _FAULT_MSG_KEYS:
+            if val := data.get(key):
+                attrs[key] = val
+        # Also scan cardList for per-zone fault messages
+        for card in data.get("cardList", []):
+            for key in _FAULT_MSG_KEYS:
+                if val := card.get(key):
+                    zone = card.get("card", "?")
+                    attrs[f"zone_{zone}_{key}"] = val
+        return attrs
 
 
 class EcoHomeOnlineSensor(CoordinatorEntity[EcoHomeCoordinator], BinarySensorEntity):

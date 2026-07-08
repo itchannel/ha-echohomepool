@@ -122,14 +122,20 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
     def hvac_modes(self) -> list[HVACMode]:
         return self._build_hvac_modes()
 
+    @staticmethod
+    def _to_bool(value: Any) -> bool:
+        if isinstance(value, str):
+            return value.lower() not in ("false", "0", "")
+        return bool(value)
+
     @property
     def hvac_mode(self) -> HVACMode:
         card = self._card()
-        if not card.get("curSwitch", False):
+        if not self._to_bool(card.get("curSwitch", False)):
             return HVACMode.OFF
 
         try:
-            cur_mode_idx = int(card.get("curMode", 0))
+            cur_mode_idx = int(float(card.get("curMode") or 0))
         except (TypeError, ValueError):
             cur_mode_idx = 0
         mode_list: list[dict] = card.get("modeList", [])
@@ -189,6 +195,12 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
             "temp_address": card.get("settingAddress") or card.get("temp_address"),
             "mode_address": (card.get("modeList") or [{}])[0].get("address"),
         }
+        # Surface any fault/alarm messages from the API
+        for key in ("faultMsg", "fault_msg", "alarmMsg", "alarm_msg", "errorMsg",
+                    "error_msg", "faultCode", "fault_code", "alarmInfo", "alarm_info",
+                    "faultInfo", "fault_info"):
+            if val := data.get(key) or card.get(key):
+                attrs[key] = val
         if spa := card.get("isSpa"):
             attrs["is_spa"] = spa
         return attrs
@@ -211,7 +223,7 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
             return
 
         # If currently off, turn on first
-        if not card.get("curSwitch", False):
+        if not self._to_bool(card.get("curSwitch", False)):
             try:
                 await self.coordinator.api.set_switch(self._device_code, True, switch_addr)
             except EcoHomeApiError as err:
