@@ -15,7 +15,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_DEVICE_CODE, DOMAIN
@@ -68,7 +67,6 @@ STATIC_SENSORS: list[EcoHomeSensorDescription] = [
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        entity_registry_enabled_default=False,
         value_fn=lambda d: _parse_float(
             (d.get("cardList") or [{}, {}])[1].get("curTempMain")
             if len(d.get("cardList", [])) > 1 else None
@@ -80,7 +78,6 @@ STATIC_SENSORS: list[EcoHomeSensorDescription] = [
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        entity_registry_enabled_default=False,
         value_fn=lambda d: _parse_float(
             (d.get("cardList") or [{}, {}])[1].get("settingTemp")
             if len(d.get("cardList", [])) > 1 else None
@@ -231,7 +228,7 @@ class EcoHomeStatusSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
     """
 
     _attr_has_entity_name = True
-    _attr_entity_registry_enabled_default = False  # opt-in — there can be many
+    _attr_entity_registry_enabled_default = True
 
     def __init__(
         self,

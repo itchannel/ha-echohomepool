@@ -1,6 +1,7 @@
 """DataUpdateCoordinator for Eco-Home."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 from typing import Any
@@ -61,7 +62,6 @@ class EcoHomeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _fetch_all(self) -> dict[str, Any]:
         """Fetch device detail and status params, merge into one dict."""
-        import asyncio
         detail, status_params = await asyncio.gather(
             self.api.get_device_detail(self.device_code),
             self.api.get_status_params(self.device_code),
@@ -70,8 +70,15 @@ class EcoHomeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if isinstance(detail, Exception):
             raise detail
         if isinstance(status_params, Exception):
-            _LOGGER.debug("Status params fetch failed (non-fatal): %s", status_params)
+            _LOGGER.warning("Status params fetch failed (non-fatal): %s", status_params)
             status_params = []
+
+        if not status_params:
+            _LOGGER.warning(
+                "No status params returned for %s — the device may not support "
+                "paramListV2/V3, or the API response format is unexpected",
+                self.device_code,
+            )
 
         detail["statusParams"] = status_params
         return detail
