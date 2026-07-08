@@ -102,7 +102,11 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
             for c in cards:
                 if str(c.get("card")) == str(self._card_id):
                     return c
-        return cards[0] if cards else {}
+        result = cards[0] if cards else {}
+        if result and not hasattr(self, "_card_logged"):
+            self._card_logged = True
+            _LOGGER.debug("Card data keys/values: %s", result)
+        return result
 
     def _build_hvac_modes(self) -> list[HVACMode]:
         modes = {HVACMode.OFF}
@@ -193,23 +197,23 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         card = self._card()
 
+        switch_addr = card.get("switchAddress") or card.get("switch_address") or ""
+
         if hvac_mode == HVACMode.OFF:
-            switch_addr = card.get("switchAddress", "")
             try:
                 await self.coordinator.api.set_switch(self._device_code, False, switch_addr)
             except EcoHomeApiError as err:
                 _LOGGER.error("Failed to turn off: %s", err)
-                return
             await self.coordinator.async_request_refresh()
             return
 
         # If currently off, turn on first
         if not card.get("curSwitch", False):
-            switch_addr = card.get("switchAddress", "")
             try:
                 await self.coordinator.api.set_switch(self._device_code, True, switch_addr)
             except EcoHomeApiError as err:
                 _LOGGER.error("Failed to turn on: %s", err)
+                await self.coordinator.async_request_refresh()
                 return
 
         # Find matching mode entry
@@ -221,16 +225,22 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
                 break
 
         if target_entry is None:
-            _LOGGER.warning("No mode entry found for %s", hvac_mode)
+            _LOGGER.debug("No mode entry for %s in modeList: %s", hvac_mode, mode_list)
+            await self.coordinator.async_request_refresh()
+            return
+
+        mode_value = target_entry.get("modeValue")
+        mode_addr = target_entry.get("address") or target_entry.get("modeAddress")
+
+        if mode_value is None or mode_addr is None:
+            _LOGGER.error(
+                "Mode entry missing modeValue/address keys: %s", target_entry
+            )
             await self.coordinator.async_request_refresh()
             return
 
         try:
-            await self.coordinator.api.set_mode(
-                self._device_code,
-                target_entry["modeValue"],
-                target_entry["address"],
-            )
+            await self.coordinator.api.set_mode(self._device_code, mode_value, mode_addr)
         except EcoHomeApiError as err:
             _LOGGER.error("Failed to set mode: %s", err)
 
@@ -241,7 +251,14 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
         if temp is None:
             return
         card = self._card()
-        address = card.get("settingAddress") or card.get("temp_address", "1003")
+        address = (
+            card.get("settingAddress")
+            or card.get("tempAddress")
+            or card.get("temp_address")
+        )
+        if not address:
+            _LOGGER.error("No temperature address in card data: %s", card)
+            return
         try:
             await self.coordinator.api.set_temperature(self._device_code, temp, address)
         except EcoHomeApiError as err:
@@ -250,7 +267,7 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
 
     async def async_turn_on(self) -> None:
         card = self._card()
-        switch_addr = card.get("switchAddress", "")
+        switch_addr = card.get("switchAddress") or card.get("switch_address") or ""
         try:
             await self.coordinator.api.set_switch(self._device_code, True, switch_addr)
         except EcoHomeApiError as err:
@@ -259,7 +276,7 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
 
     async def async_turn_off(self) -> None:
         card = self._card()
-        switch_addr = card.get("switchAddress", "")
+        switch_addr = card.get("switchAddress") or card.get("switch_address") or ""
         try:
             await self.coordinator.api.set_switch(self._device_code, False, switch_addr)
         except EcoHomeApiError as err:
