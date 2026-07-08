@@ -109,8 +109,16 @@ class EcoHomeApi:
         )
         raw = data.get("objectResult")
 
+        _LOGGER.warning(
+            "paramListV3 type=%s raw response keys=%s objectResult type=%s value=%s",
+            param_type,
+            list(data.keys()),
+            type(raw).__name__,
+            str(raw)[:500],
+        )
+
         if not isinstance(raw, list):
-            _LOGGER.debug("paramListV3 type=%s returned non-list: %s", param_type, type(raw))
+            _LOGGER.warning("paramListV3 type=%s returned non-list: %s", param_type, type(raw))
             return []
 
         flat: list[dict[str, Any]] = []
