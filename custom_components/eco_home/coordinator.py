@@ -28,6 +28,11 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _is_auth_error(err: Exception) -> bool:
+    msg = str(err)
+    return "Token expired" in msg or "Not authenticated" in msg
+
+
 class EcoHomeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Polls the Eco-Home cloud for one device."""
 
@@ -55,7 +60,7 @@ class EcoHomeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         try:
             return await self._fetch_all()
         except EcoHomeApiError as err:
-            if "Token expired" in str(err) or "Not authenticated" in str(err):
+            if _is_auth_error(err):
                 await self._reauthenticate()
                 try:
                     return await self._fetch_all()
@@ -64,19 +69,30 @@ class EcoHomeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise UpdateFailed(str(err)) from err
 
     async def _fetch_all(self) -> dict[str, Any]:
-        """Fetch device detail and status params, merge into one dict."""
-        detail, status_params = await asyncio.gather(
+        """Fetch device detail, status params, and fault info, merge into one dict."""
+        detail, status_params, fault_info = await asyncio.gather(
             self.api.get_device_detail(self.device_code),
             self.api.get_status_params(self.device_code),
+            self.api.get_fault_info(self.device_code),
             return_exceptions=True,
         )
         if isinstance(detail, Exception):
             raise detail
         if isinstance(status_params, Exception):
+            if _is_auth_error(status_params):
+                # Don't swallow this one: get_device_detail() has its own
+                # fallback that can mask an expired token, so this is often
+                # the only signal we get that the token needs refreshing.
+                # Raise it so _async_update_data can reauthenticate and retry.
+                raise status_params
             _LOGGER.warning("Status params fetch failed (non-fatal): %s", status_params)
             status_params = []
+        if isinstance(fault_info, Exception):
+            _LOGGER.warning("Fault info fetch failed (non-fatal): %s", fault_info)
+            fault_info = []
 
         detail["statusParams"] = status_params
+        detail["faultInfoList"] = fault_info
         return detail
 
     async def _reauthenticate(self) -> None:
@@ -99,7 +115,11 @@ class EcoHomeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             or self.device_code
         )
         sw_version = data.get("softVersion") or data.get("soft_version")
-        model = data.get("deviceType") or data.get("device_type") or MODEL
+        # "deviceType" is just a numeric type code (e.g. "0"), not a
+        # human-readable model name — it was overriding our MODEL default
+        # because non-empty strings are truthy even when the string is "0".
+        # Show the device ID instead, which is actually meaningful.
+        model = self.device_code
         return DeviceInfo(
             identifiers={(DOMAIN, self.device_code)},
             name=name,

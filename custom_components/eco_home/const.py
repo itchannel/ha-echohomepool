@@ -29,4 +29,6 @@ MODE_AUTO = "auto"
 # We map by modeMeaning keywords.
 MODE_MEANING_COOL_KEYWORDS = ("冷", "cool", "refriger", "制冷")
 MODE_MEANING_HEAT_KEYWORDS = ("热", "heat", "制热")
-MODE_MEANING_AUTO_KEYWORDS = ("auto", "自动")
+MODE_MEANING_AUTO_KEYWORDS = ("auto", "自动", "smart", "intelligen")
+MODE_MEANING_DRY_KEYWORDS = ("dry", "dehumid", "除湿", "干燥")
+MODE_MEANING_FAN_KEYWORDS = ("fan only", "fan_only", "送风", "风扇")

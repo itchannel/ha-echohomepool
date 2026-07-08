@@ -1,6 +1,8 @@
 """Binary sensors for Eco-Home pool heat pump."""
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
@@ -13,10 +15,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import CONF_DEVICE_CODE, DOMAIN
 from .coordinator import EcoHomeCoordinator
 
-_FAULT_MSG_KEYS = (
-    "faultMsg", "fault_msg", "alarmMsg", "alarm_msg", "errorMsg",
-    "error_msg", "faultInfo", "fault_info", "alarmInfo", "alarm_info",
-)
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -55,15 +54,21 @@ class EcoHomeFaultSensor(CoordinatorEntity[EcoHomeCoordinator], BinarySensorEnti
     def extra_state_attributes(self) -> dict:
         data = self.coordinator.data
         attrs: dict = {}
-        for key in _FAULT_MSG_KEYS:
-            if val := data.get(key):
-                attrs[key] = val
-        # Also scan cardList for per-zone fault messages
-        for card in data.get("cardList", []):
-            for key in _FAULT_MSG_KEYS:
-                if val := card.get(key):
-                    zone = card.get("card", "?")
-                    attrs[f"zone_{zone}_{key}"] = val
+        # faultNum is a real field confirmed from a live payload dump.
+        fault_num = data.get("faultNum")
+        if fault_num not in (None, 0, "0"):
+            attrs["fault_code"] = fault_num
+
+        # getDeviceFaultInfo.json returns a LIST of fault records (confirmed
+        # live), each with a "description" field — that's the actual
+        # human-readable message, not a single "fault_msg_list" string.
+        fault_list = data.get("faultInfoList") or []
+        descriptions = [
+            f.get("description") for f in fault_list
+            if isinstance(f, dict) and f.get("description")
+        ]
+        if descriptions:
+            attrs["fault_message"] = "; ".join(descriptions)
         return attrs
 
 
@@ -83,6 +88,18 @@ class EcoHomeOnlineSensor(CoordinatorEntity[EcoHomeCoordinator], BinarySensorEnt
         return self.coordinator.device_info
 
     @property
+    def available(self) -> bool:
+        # Deliberately don't defer to CoordinatorEntity's default (which
+        # ties availability to last_update_success) — this entity's whole
+        # job is to show "off" when the device can't be reached, so it must
+        # stay available even when the coordinator's poll fails.
+        return True
+
+    @property
     def is_on(self) -> bool:
-        status = self.coordinator.data.get("deviceStatus", "ONLINE")
-        return str(status).upper() == "ONLINE"
+        # The device detail response has no "deviceStatus"/online field at
+        # all (confirmed from a live payload dump), so the old code always
+        # defaulted to "ONLINE" regardless of reality. The only genuine
+        # connectivity signal this API gives us is whether the last poll
+        # actually succeeded.
+        return self.coordinator.last_update_success

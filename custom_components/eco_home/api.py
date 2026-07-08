@@ -86,16 +86,31 @@ class EcoHomeApi:
             if result:
                 return result
         except EcoHomeApiError as err:
-            _LOGGER.debug("getDeviceDetailV3 failed, falling back: %s", err)
+            _LOGGER.warning("getDeviceDetailV3 failed, falling back: %s", err)
 
         data = await self._post(
             f"{CLOUD_API}/app/deviceInfo/getDeviceDetail.json",
-            {"deviceCode": device_code},
+            {"device_code": device_code},
         )
         result = data.get("objectResult") or data.get("object_result")
         if not result:
             raise EcoHomeApiError(f"Empty device detail for {device_code}")
         return result
+
+    async def get_fault_info(self, device_code: str) -> list[dict[str, Any]]:
+        """Fetch recent/active fault records for the device.
+
+        Confirmed from a live response: there is no single 'fault_msg_list'
+        field. objectResult/object_result is a LIST of fault entries, each
+        with a human-readable 'description' (e.g. "Flow Error"), plus
+        'fault_code' and 'create_time'.
+        """
+        data = await self._post(
+            f"{CLOUD_API}/app/deviceInfo/getDeviceFaultInfo.json",
+            {"device_code": device_code},
+        )
+        result = data.get("objectResult") or data.get("object_result") or []
+        return result if isinstance(result, list) else []
 
     async def get_status_params(self, device_code: str) -> list[dict[str, Any]]:
         """Fetch live status sensor registers.

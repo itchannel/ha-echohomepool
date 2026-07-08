@@ -12,7 +12,13 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature
+from homeassistant.const import (
+    UnitOfElectricCurrent,
+    UnitOfElectricPotential,
+    UnitOfEnergy,
+    UnitOfPower,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -100,11 +106,29 @@ _SPEED_KEYWORDS = ("speed", "rpm", "frequency", "hz")
 _PRESSURE_KEYWORDS = ("pressure",)
 _BOOL_KEYWORDS = ("valve", "pump", "output", "switch", "status", "state")
 
+# Cumulative energy (kWh) vs. instantaneous power (W) — checked in this order
+# since a name like "power consumption" would otherwise match "power" first.
+# This is a best-effort keyword guess like the others in this file; verify
+# against the actual entity once it appears (name, unit, and whether the
+# value keeps counting up vs. fluctuates) and let us know if it's misclassified.
+_ENERGY_KEYWORDS = ("energy", "kwh", "electricity consumption", "power consumption")
+_POWER_KEYWORDS = ("power", "watt")
+_CURRENT_KEYWORDS = ("current", "amp")
+_VOLTAGE_KEYWORDS = ("voltage", "volt")
+
 
 def _guess_device_class(name: str) -> SensorDeviceClass | None:
     n = name.lower()
     if any(k in n for k in _TEMP_KEYWORDS):
         return SensorDeviceClass.TEMPERATURE
+    if any(k in n for k in _ENERGY_KEYWORDS):
+        return SensorDeviceClass.ENERGY
+    if any(k in n for k in _POWER_KEYWORDS):
+        return SensorDeviceClass.POWER
+    if any(k in n for k in _CURRENT_KEYWORDS):
+        return SensorDeviceClass.CURRENT
+    if any(k in n for k in _VOLTAGE_KEYWORDS):
+        return SensorDeviceClass.VOLTAGE
     if any(k in n for k in _SPEED_KEYWORDS):
         return None  # no HA device class for rpm/frequency generically
     if any(k in n for k in _PRESSURE_KEYWORDS):
@@ -113,18 +137,36 @@ def _guess_device_class(name: str) -> SensorDeviceClass | None:
 
 
 def _guess_unit(name: str, unit_from_api: str | None) -> str | None:
-    """Prefer whatever unit the API returns, fallback to guessing from name."""
-    if unit_from_api and unit_from_api.strip():
-        u = unit_from_api.strip()
-        # Normalise degree symbols
-        if u in ("℃", "°C", "C"):
-            return UnitOfTemperature.CELSIUS
-        if u in ("℉", "°F", "F"):
-            return UnitOfTemperature.FAHRENHEIT
-        return u
+    """Prefer whatever unit the API returns, fallback to guessing from name.
+
+    Temperature sensors are always normalised to a proper HA UnitOfTemperature
+    enum value (never the raw device string) so that HA's automatic
+    metric/imperial unit conversion — based on device_class + unit — actually
+    kicks in. _guess_device_class tags these as SensorDeviceClass.TEMPERATURE
+    independently of the raw unit text, so if we let an unrecognised raw
+    string through here, HA can't reconcile the two and conversion silently
+    never happens.
+    """
     n = name.lower()
     if any(k in n for k in _TEMP_KEYWORDS):
+        if unit_from_api and any(f in unit_from_api for f in ("℉", "°F", "F")):
+            return UnitOfTemperature.FAHRENHEIT
         return UnitOfTemperature.CELSIUS
+
+    # Same reasoning as temperature above: force a proper HA unit enum for
+    # electrical measurements so device-class validation and (for energy)
+    # the Energy dashboard actually accept the sensor.
+    if any(k in n for k in _ENERGY_KEYWORDS):
+        return UnitOfEnergy.KILO_WATT_HOUR
+    if any(k in n for k in _POWER_KEYWORDS):
+        return UnitOfPower.WATT
+    if any(k in n for k in _CURRENT_KEYWORDS):
+        return UnitOfElectricCurrent.AMPERE
+    if any(k in n for k in _VOLTAGE_KEYWORDS):
+        return UnitOfElectricPotential.VOLT
+
+    if unit_from_api and unit_from_api.strip():
+        return unit_from_api.strip()
     return None
 
 
@@ -160,7 +202,7 @@ async def async_setup_entry(
     # add *new* entities here, existing ones update themselves.
     known_keys: set[str] = {e.unique_id for e in entities if e.unique_id}
 
-    async def _async_add_new_params(_now=None) -> None:
+    def _add_new_params() -> None:
         new = [
             e for e in _build_status_sensors(coordinator, device_code)
             if e.unique_id not in known_keys
@@ -169,7 +211,7 @@ async def async_setup_entry(
             known_keys.update(e.unique_id for e in new if e.unique_id)
             async_add_entities(new)
 
-    coordinator.async_add_listener(_async_add_new_params)
+    coordinator.async_add_listener(_add_new_params)
 
 
 def _build_status_sensors(
@@ -253,10 +295,14 @@ class EcoHomeStatusSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
 
         unit = _guess_unit(param_name, initial_item.get("unit"))
         self._attr_native_unit_of_measurement = unit
-        self._attr_device_class = _guess_device_class(param_name)
-        self._attr_state_class = (
-            SensorStateClass.MEASUREMENT if unit else None
-        )
+        device_class = _guess_device_class(param_name)
+        self._attr_device_class = device_class
+        if device_class == SensorDeviceClass.ENERGY:
+            # Energy dashboard compatibility requires total/total_increasing,
+            # not measurement, for a cumulative kWh counter.
+            self._attr_state_class = SensorStateClass.TOTAL_INCREASING
+        else:
+            self._attr_state_class = SensorStateClass.MEASUREMENT if unit else None
 
     @property
     def device_info(self):

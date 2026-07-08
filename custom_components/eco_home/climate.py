@@ -22,6 +22,8 @@ from .const import (
     DOMAIN,
     MODE_MEANING_AUTO_KEYWORDS,
     MODE_MEANING_COOL_KEYWORDS,
+    MODE_MEANING_DRY_KEYWORDS,
+    MODE_MEANING_FAN_KEYWORDS,
     MODE_MEANING_HEAT_KEYWORDS,
 )
 from .coordinator import EcoHomeCoordinator
@@ -62,6 +64,12 @@ def _meaning_to_hvac_mode(meaning: str) -> HVACMode:
     for kw in MODE_MEANING_HEAT_KEYWORDS:
         if kw.lower() in m:
             return HVACMode.HEAT
+    for kw in MODE_MEANING_DRY_KEYWORDS:
+        if kw.lower() in m:
+            return HVACMode.DRY
+    for kw in MODE_MEANING_FAN_KEYWORDS:
+        if kw.lower() in m:
+            return HVACMode.FAN_ONLY
     for kw in MODE_MEANING_AUTO_KEYWORDS:
         if kw.lower() in m:
             return HVACMode.AUTO
@@ -74,7 +82,10 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
     _attr_has_entity_name = True
     _attr_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_supported_features = (
-        ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.TURN_ON | ClimateEntityFeature.TURN_OFF
+        ClimateEntityFeature.TARGET_TEMPERATURE
+        | ClimateEntityFeature.TURN_ON
+        | ClimateEntityFeature.TURN_OFF
+        | ClimateEntityFeature.PRESET_MODE
     )
 
     def __init__(
@@ -125,6 +136,38 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
     @property
     def hvac_modes(self) -> list[HVACMode]:
         return self._build_hvac_modes()
+
+    @property
+    def preset_modes(self) -> list[str] | None:
+        """Every raw device mode, exposed 1:1 so nothing gets lost.
+
+        hvac_mode only has room for HA's fixed set of categories (off/heat/
+        cool/auto/dry/fan_only), so distinct device modes that fall into the
+        same category (e.g. "Electric Heating" vs "Solar Heating", both
+        HVACMode.HEAT) become indistinguishable there. preset_mode exposes
+        the exact modeMeaning text from the device instead, so any mode the
+        firmware reports is selectable even if we don't recognise it.
+        """
+        names = []
+        for entry in self._card().get("modeList", []):
+            meaning = entry.get("modeMeaning")
+            if meaning and meaning not in names:
+                names.append(meaning)
+        return names or None
+
+    @property
+    def preset_mode(self) -> str | None:
+        card = self._card()
+        if not self._to_bool(card.get("curSwitch", False)):
+            return None
+        try:
+            cur_mode_idx = int(float(card.get("curMode") or 0))
+        except (TypeError, ValueError):
+            cur_mode_idx = 0
+        mode_list: list[dict] = card.get("modeList", [])
+        if mode_list and 0 <= cur_mode_idx < len(mode_list):
+            return mode_list[cur_mode_idx].get("modeMeaning")
+        return None
 
     @staticmethod
     def _to_bool(value: Any) -> bool:
@@ -216,9 +259,8 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         card = self._card()
 
-        switch_addr = card.get("switchAddress") or card.get("switch_address") or ""
-
         if hvac_mode == HVACMode.OFF:
+            switch_addr = card.get("switchAddress") or card.get("switch_address") or ""
             try:
                 await self.coordinator.api.set_switch(self._device_code, False, switch_addr)
             except EcoHomeApiError as err:
@@ -226,16 +268,6 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
             await self.coordinator.async_request_refresh()
             return
 
-        # If currently off, turn on first
-        if not self._to_bool(card.get("curSwitch", False)):
-            try:
-                await self.coordinator.api.set_switch(self._device_code, True, switch_addr)
-            except EcoHomeApiError as err:
-                _LOGGER.error("Failed to turn on: %s", err)
-                await self.coordinator.async_request_refresh()
-                return
-
-        # Find matching mode entry
         mode_list: list[dict] = card.get("modeList", [])
         target_entry = None
         for entry in mode_list:
@@ -245,8 +277,38 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
 
         if target_entry is None:
             _LOGGER.debug("No mode entry for %s in modeList: %s", hvac_mode, mode_list)
-            await self.coordinator.async_request_refresh()
             return
+
+        await self._async_apply_mode_entry(card, target_entry)
+
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
+        """Select a mode by its exact device-reported name (see preset_modes)."""
+        card = self._card()
+        mode_list: list[dict] = card.get("modeList", [])
+        target_entry = next(
+            (e for e in mode_list if e.get("modeMeaning") == preset_mode), None
+        )
+        if target_entry is None:
+            _LOGGER.error(
+                "No mode entry named %r in modeList: %s", preset_mode, mode_list
+            )
+            return
+
+        await self._async_apply_mode_entry(card, target_entry)
+
+    async def _async_apply_mode_entry(
+        self, card: dict[str, Any], target_entry: dict[str, Any]
+    ) -> None:
+        """Turn the zone on if needed, then push a specific modeList entry."""
+        switch_addr = card.get("switchAddress") or card.get("switch_address") or ""
+
+        if not self._to_bool(card.get("curSwitch", False)):
+            try:
+                await self.coordinator.api.set_switch(self._device_code, True, switch_addr)
+            except EcoHomeApiError as err:
+                _LOGGER.error("Failed to turn on: %s", err)
+                await self.coordinator.async_request_refresh()
+                return
 
         mode_value = target_entry.get("modeValue")
         mode_addr = target_entry.get("address") or target_entry.get("modeAddress")
