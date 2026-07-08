@@ -7,10 +7,11 @@ Home Assistant integration for pool heat pumps controlled by the [Eco-Home app](
 ## Features
 
 - **Climate entity** per zone — on/off, heat/cool mode, target temperature
-- **Sensor** — current water temperature and setpoint readback per zone
+- **Sensors** — current water temperature and setpoint per zone
+- **Status query sensors** — live refrigerant circuit data: suction/discharge temps, plate heat exchanger temps, ambient temperature, variable-speed pump speed & feedback, valve outputs, and any other registers the device exposes (disabled by default, opt-in per entity)
 - **Switch** — master all-zones power
 - **Binary sensors** — fault alert, cloud connectivity status
-- Cloud polling (default every 30 seconds, configurable)
+- Cloud polling (default every **30 seconds**, adjustable via Configure)
 - Automatic token refresh
 
 ## Installation via HACS
@@ -29,9 +30,11 @@ Copy `custom_components/eco_home/` into your HA `config/custom_components/` dire
 1. **Settings → Integrations → Add Integration → Eco-Home Pool Heat Pump**
 2. Enter your Eco-Home app **email** and **password**
 3. Select your device from the dropdown
-4. Optionally adjust the polling interval via **Configure** (default: 30 s)
+4. Optionally adjust the polling interval via **Configure** (default: 30 s, minimum: 10 s)
 
 ## Entities
+
+### Always enabled
 
 | Entity | Type | Description |
 |---|---|---|
@@ -43,7 +46,21 @@ Copy `custom_components/eco_home/` into your HA `config/custom_components/` dire
 | `binary_sensor.fault` | Binary sensor | Fault / problem indicator |
 | `binary_sensor.online` | Binary sensor | Cloud connectivity |
 
-Zone 2 sensors are disabled by default — enable them in entity settings if your unit is dual-zone.
+### Disabled by default — enable as needed
+
+| Entity | Type | Description |
+|---|---|---|
+| `sensor.water_temperature_zone_2` | Sensor | Zone 2 current temp (dual-zone units) |
+| `sensor.target_temperature_zone_2` | Sensor | Zone 2 setpoint (dual-zone units) |
+| `sensor.<param_name>` | Sensor | One entity per status register returned by the device — e.g. suction temperature, plate heat exchanger in/out temps, ambient temperature, pump target speed, pump feedback speed, electromagnetic valve outputs |
+
+To enable status sensors: **Settings → Entities**, search for your device, toggle the ones you want.
+
+The exact set of status sensors depends on your specific unit's firmware. They are created dynamically from whatever registers the cloud API returns, so a firmware update may add new ones automatically.
+
+## Polling
+
+Both the main device state and the status parameter list are fetched on every poll cycle (default 30 s). The two requests run in parallel. If the status parameter fetch fails it is treated as non-fatal — the climate/switch/binary sensor entities continue to work normally.
 
 ## Compatibility
 
