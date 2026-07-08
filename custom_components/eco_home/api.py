@@ -13,7 +13,14 @@ _LOGGER = logging.getLogger(__name__)
 
 _HEADERS = {
     "Content-Type": "application/json;charset=UTF-8",
+    "Connection": "keep-alive",
+    "Accept": "*/*",
     "app-id-type": "0",
+    "User-Agent": (
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) "
+        "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 "
+        "Html5Plus/1.0 (Immersed/20) uni-app"
+    ),
 }
 
 
@@ -26,7 +33,7 @@ class EcoHomeApiError(Exception):
 
 
 class EcoHomeApi:
-    """Thin async wrapper around the Eco-Home cloud REST API."""
+    """Async wrapper around the Eco-Home cloud REST API."""
 
     def __init__(self, session: aiohttp.ClientSession) -> None:
         self._session = session
@@ -38,20 +45,12 @@ class EcoHomeApi:
 
     async def login(self, email: str, password: str) -> str:
         """Login and return the x-token. Password is MD5-hashed before sending."""
-        payload = {
-            "user_name": email,
-            "password": _md5(password),
-            "type": "2",
-        }
         data = await self._post(
             f"{CLOUD_API}/app/user/login.json",
-            payload,
+            {"user_name": email, "password": _md5(password), "type": 2},
             authenticated=False,
         )
-        token = data.get("x-token") or data.get("object_result", {}).get("x-token")
-        if not token:
-            # Some firmware versions nest the token differently
-            token = data.get("object_result") if isinstance(data.get("object_result"), str) else None
+        token = data.get("object_result", {}).get("x-token")
         if not token:
             raise EcoHomeApiError("Login succeeded but no x-token in response")
         self._token = token
@@ -65,7 +64,6 @@ class EcoHomeApi:
     # ------------------------------------------------------------------
 
     async def get_device_list(self) -> list[dict[str, Any]]:
-        """Return list of all devices on the account."""
         data = await self._post(
             f"{CLOUD_API}/app/device/deviceList.json",
             {"page_index": "1", "page_size": "1000"},
@@ -78,85 +76,80 @@ class EcoHomeApi:
     # ------------------------------------------------------------------
 
     async def get_device_detail(self, device_code: str) -> dict[str, Any]:
-        """Fetch current device state. Tries V3 (crmservice) first, falls back to V1."""
-        try:
-            data = await self._post(
-                f"{CRM_API}/app/deviceInfo/getDeviceDetailV3",
-                {"deviceCode": device_code},
-            )
-            result = data.get("objectResult") or data.get("object_result")
-            if result:
-                return result
-        except EcoHomeApiError:
-            pass
-
-        # Fallback to V1
+        """Fetch current device state from crmservice V3."""
         data = await self._post(
-            f"{CLOUD_API}/app/deviceInfo/getDeviceDetail.json",
+            f"{CRM_API}/app/deviceInfo/getDeviceDetailV3",
             {"deviceCode": device_code},
         )
-        result = data.get("objectResult") or data.get("object_result")
+        result = data.get("objectResult")
         if not result:
             raise EcoHomeApiError(f"Empty device detail for {device_code}")
         return result
+
+    async def get_status_params(self, device_code: str) -> list[dict[str, Any]]:
+        """Fetch live status sensor registers.
+
+        Type 0 = system status (flat list of {point_name, address_value, unit})
+        Type 1 = module status (grouped: [{moduleContent: [{point_name, ...}]}])
+
+        Returns a single flat list combining both.
+        """
+        results: list[dict[str, Any]] = []
+        for param_type in (0, 1):
+            items = await self._fetch_param_list(device_code, param_type)
+            results.extend(items)
+        return results
+
+    async def _fetch_param_list(
+        self, device_code: str, param_type: int
+    ) -> list[dict[str, Any]]:
+        data = await self._post(
+            f"{CRM_API}/app/deviceInfo/paramListV3",
+            {"deviceCode": device_code, "type": param_type, "isAutoRefresh": False},
+        )
+        raw = data.get("objectResult")
+
+        if not isinstance(raw, list):
+            _LOGGER.debug("paramListV3 type=%s returned non-list: %s", param_type, type(raw))
+            return []
+
+        flat: list[dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            if "moduleContent" in item:
+                # Type 1 grouped structure
+                content = item["moduleContent"]
+                if isinstance(content, list):
+                    flat.extend(i for i in content if isinstance(i, dict))
+            elif "point_name" in item:
+                flat.append(item)
+
+        return flat
 
     # ------------------------------------------------------------------
     # Control commands
     # ------------------------------------------------------------------
 
-    async def get_status_params(self, device_code: str) -> list[dict[str, Any]]:
-        """Fetch the module/system status parameter list (type 1 = module status).
-
-        Returns a flat list of {name, value, unit} dicts sourced from the device's
-        live sensor registers — suction temp, plate temps, pump speed, valve states etc.
-        The server returns dynamic labels so we surface them as-is.
-        """
-        try:
-            data = await self._post(
-                f"{CRM_API}/app/deviceInfo/paramListV3",
-                {"device_code": device_code, "type": 1, "is_auto_refresh": False},
-            )
-            result = data.get("object_result") or data.get("objectResult") or []
-            if isinstance(result, list):
-                return result
-        except EcoHomeApiError:
-            pass
-
-        # Fallback to V2
-        data = await self._post(
-            f"{CLOUD_API}/app/deviceInfo/paramListV2.json",
-            {"device_code": device_code, "type": 1, "is_auto_refresh": False},
-        )
-        result = data.get("object_result") or data.get("objectResult") or []
-        return result if isinstance(result, list) else []
-
     async def set_switch(self, device_code: str, value: bool, address: str) -> None:
-        """Turn a single zone on or off."""
         await self._post(
             f"{CLOUD_API}/app/deviceInfo/updateSwitchSate.json",
             {"device_code": device_code, "value": value, "address": address},
         )
 
     async def set_all_switch(self, device_code: str, value: bool) -> None:
-        """Turn all zones on or off simultaneously."""
         await self._post(
             f"{CLOUD_API}/app/deviceInfo/updateAllSwitchSate.json",
             {"device_code": device_code, "value": value},
         )
 
-    async def set_temperature(
-        self, device_code: str, value: int | float, address: str
-    ) -> None:
-        """Set target temperature for a zone."""
+    async def set_temperature(self, device_code: str, value: int | float, address: str) -> None:
         await self._post(
             f"{CLOUD_API}/app/deviceInfo/controlOfValue.json",
             {"device_code": device_code, "value": int(value), "address": address},
         )
 
-    async def set_mode(
-        self, device_code: str, mode_value: str, address: str
-    ) -> None:
-        """Change operating mode (cool/heat/auto)."""
+    async def set_mode(self, device_code: str, mode_value: str, address: str) -> None:
         await self._post(
             f"{CLOUD_API}/app/deviceInfo/updateModeValue.json",
             {"device_code": device_code, "value": mode_value, "address": address},
@@ -183,7 +176,8 @@ class EcoHomeApi:
 
         try:
             async with self._session.post(
-                full_url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=15)
+                full_url, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
             ) as resp:
                 resp.raise_for_status()
                 data: dict[str, Any] = await resp.json(content_type=None)
@@ -192,11 +186,19 @@ class EcoHomeApi:
 
         _LOGGER.debug("Response: %s", data)
 
-        # API signals auth expiry with sub_code -100
         if data.get("sub_code") == "-100":
             raise EcoHomeApiError("Token expired (sub_code -100)")
 
-        if not data.get("is_reuslt_suc", True):
+        # errorCode style (some endpoints)
+        if "errorCode" in data and data["errorCode"] != 200:
+            raise EcoHomeApiError(f"{data['errorCode']}: {data.get('errorMsg', 'error')}")
+
+        # error_code style (cloudservice endpoints)
+        if data.get("error_code", "0") != "0":
+            raise EcoHomeApiError(f"{data['error_code']}: {data.get('error_msg', 'error')}")
+
+        # is_reuslt_suc style (typo is intentional — matches the API)
+        if "is_reuslt_suc" in data and not data["is_reuslt_suc"]:
             raise EcoHomeApiError(data.get("error_msg", "Unknown API error"))
 
         return data

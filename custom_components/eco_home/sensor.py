@@ -178,10 +178,12 @@ def _build_status_sensors(
     """Build one sensor per entry in statusParams."""
     params: list[dict] = coordinator.data.get("statusParams", [])
     sensors = []
+    seen: set[str] = set()
     for item in params:
-        name = item.get("name") or item.get("content") or item.get("label")
-        if not name:
+        name = item.get("point_name")
+        if not name or name in seen:
             continue
+        seen.add(name)
         sensors.append(EcoHomeStatusSensor(coordinator, device_code, name, item))
     return sensors
 
@@ -245,7 +247,7 @@ class EcoHomeStatusSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
         self._attr_unique_id = f"{device_code}_status_{slug}"
         self._attr_name = param_name
 
-        unit = _guess_unit(param_name, initial_item.get("unit"))
+        unit = _guess_unit(param_name, initial_item.get("unit") or initial_item.get("address_unit"))
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = _guess_device_class(param_name)
         self._attr_state_class = (
@@ -254,8 +256,7 @@ class EcoHomeStatusSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
 
     def _find_item(self) -> dict[str, Any] | None:
         for item in self.coordinator.data.get("statusParams", []):
-            name = item.get("name") or item.get("content") or item.get("label")
-            if name == self._param_name:
+            if item.get("point_name") == self._param_name:
                 return item
         return None
 
@@ -264,8 +265,7 @@ class EcoHomeStatusSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
         item = self._find_item()
         if item is None:
             return None
-        raw = item.get("value") or item.get("curValue") or item.get("cur_value")
-        # Try float for numeric sensors, fall back to raw string
+        raw = item.get("address_value")
         parsed = _parse_float(raw)
         return parsed if parsed is not None else raw
 
@@ -273,11 +273,8 @@ class EcoHomeStatusSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         item = self._find_item() or {}
         attrs: dict[str, Any] = {}
-        # Expose the register address so advanced users can reference it
-        for key in ("address", "reg_address", "addr"):
-            if key in item:
-                attrs["register_address"] = item[key]
-                break
+        if "address" in item:
+            attrs["register_address"] = item["address"]
         return attrs
 
     @property
