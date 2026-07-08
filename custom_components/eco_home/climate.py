@@ -128,7 +128,10 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
         if not card.get("curSwitch", False):
             return HVACMode.OFF
 
-        cur_mode_idx = card.get("curMode", 0)
+        try:
+            cur_mode_idx = int(card.get("curMode", 0))
+        except (TypeError, ValueError):
+            cur_mode_idx = 0
         mode_list: list[dict] = card.get("modeList", [])
         if mode_list and cur_mode_idx < len(mode_list):
             meaning = mode_list[cur_mode_idx].get("modeMeaning", "")
