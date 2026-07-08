@@ -120,16 +120,8 @@ class EcoHomeApi:
         )
         raw = data.get("objectResult")
 
-        _LOGGER.warning(
-            "paramListV3 type=%s raw response keys=%s objectResult type=%s value=%s",
-            param_type,
-            list(data.keys()),
-            type(raw).__name__,
-            str(raw)[:500],
-        )
-
         if not isinstance(raw, list):
-            _LOGGER.warning("paramListV3 type=%s returned non-list: %s", param_type, type(raw))
+            _LOGGER.debug("paramListV3 type=%s returned non-list: %s", param_type, type(raw))
             return []
 
         flat: list[dict[str, Any]] = []
@@ -137,11 +129,11 @@ class EcoHomeApi:
             if not isinstance(item, dict):
                 continue
             if "moduleContent" in item:
-                # Type 1 grouped structure
+                # Grouped structure: [{moduleContent: [{pointName, addressValue, unit}]}]
                 content = item["moduleContent"]
                 if isinstance(content, list):
                     flat.extend(i for i in content if isinstance(i, dict))
-            elif "point_name" in item:
+            elif "pointName" in item:
                 flat.append(item)
 
         return flat

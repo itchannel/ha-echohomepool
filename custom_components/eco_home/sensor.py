@@ -180,7 +180,7 @@ def _build_status_sensors(
     sensors = []
     seen: set[str] = set()
     for item in params:
-        name = item.get("point_name")
+        name = item.get("pointName")
         if not name or name in seen:
             continue
         seen.add(name)
@@ -247,7 +247,7 @@ class EcoHomeStatusSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
         self._attr_unique_id = f"{device_code}_status_{slug}"
         self._attr_name = param_name
 
-        unit = _guess_unit(param_name, initial_item.get("unit") or initial_item.get("address_unit"))
+        unit = _guess_unit(param_name, initial_item.get("unit"))
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = _guess_device_class(param_name)
         self._attr_state_class = (
@@ -256,7 +256,7 @@ class EcoHomeStatusSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
 
     def _find_item(self) -> dict[str, Any] | None:
         for item in self.coordinator.data.get("statusParams", []):
-            if item.get("point_name") == self._param_name:
+            if item.get("pointName") == self._param_name:
                 return item
         return None
 
@@ -265,7 +265,7 @@ class EcoHomeStatusSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
         item = self._find_item()
         if item is None:
             return None
-        raw = item.get("address_value")
+        raw = item.get("addressValue")
         parsed = _parse_float(raw)
         return parsed if parsed is not None else raw
 

@@ -73,13 +73,6 @@ class EcoHomeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning("Status params fetch failed (non-fatal): %s", status_params)
             status_params = []
 
-        if not status_params:
-            _LOGGER.warning(
-                "No status params returned for %s — the device may not support "
-                "paramListV2/V3, or the API response format is unexpected",
-                self.device_code,
-            )
-
         detail["statusParams"] = status_params
         return detail
 
