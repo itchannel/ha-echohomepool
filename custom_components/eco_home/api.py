@@ -76,12 +76,23 @@ class EcoHomeApi:
     # ------------------------------------------------------------------
 
     async def get_device_detail(self, device_code: str) -> dict[str, Any]:
-        """Fetch current device state from crmservice V3."""
+        """Fetch current device state. Tries crmservice V3 first, falls back to cloudservice."""
+        try:
+            data = await self._post(
+                f"{CRM_API}/app/deviceInfo/getDeviceDetailV3",
+                {"deviceCode": device_code},
+            )
+            result = data.get("objectResult") or data.get("object_result")
+            if result:
+                return result
+        except EcoHomeApiError as err:
+            _LOGGER.debug("getDeviceDetailV3 failed, falling back: %s", err)
+
         data = await self._post(
-            f"{CRM_API}/app/deviceInfo/getDeviceDetailV3",
+            f"{CLOUD_API}/app/deviceInfo/getDeviceDetail.json",
             {"deviceCode": device_code},
         )
-        result = data.get("objectResult")
+        result = data.get("objectResult") or data.get("object_result")
         if not result:
             raise EcoHomeApiError(f"Empty device detail for {device_code}")
         return result
@@ -197,13 +208,14 @@ class EcoHomeApi:
         if data.get("sub_code") == "-100":
             raise EcoHomeApiError("Token expired (sub_code -100)")
 
-        # errorCode style (some endpoints)
+        # errorCode style (crmservice endpoints)
         if "errorCode" in data and data["errorCode"] != 200:
             raise EcoHomeApiError(f"{data['errorCode']}: {data.get('errorMsg', 'error')}")
 
-        # error_code style (cloudservice endpoints)
-        if data.get("error_code", "0") != "0":
-            raise EcoHomeApiError(f"{data['error_code']}: {data.get('error_msg', 'error')}")
+        # error_code style — only raise when the key explicitly signals failure
+        error_code = data.get("error_code")
+        if error_code is not None and str(error_code) not in ("0", "200", ""):
+            raise EcoHomeApiError(f"{error_code}: {data.get('error_msg', 'error')}")
 
         # is_reuslt_suc style (typo is intentional — matches the API)
         if "is_reuslt_suc" in data and not data["is_reuslt_suc"]:
