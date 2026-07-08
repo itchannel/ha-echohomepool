@@ -1,0 +1,11 @@
+{
+  "domain": "eco_home",
+  "name": "Eco-Home Pool Heat Pump",
+  "version": "1.0.0",
+  "config_flow": true,
+  "documentation": "https://github.com/itchannel/ha-echohomepool",
+  "requirements": ["aiohttp>=3.9.0"],
+  "dependencies": [],
+  "codeowners": ["@itchannel"],
+  "iot_class": "cloud_polling"
+}
