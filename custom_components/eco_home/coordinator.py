@@ -10,6 +10,7 @@ import aiohttp
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import EcoHomeApi, EcoHomeApiError
@@ -20,6 +21,8 @@ from .const import (
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    MANUFACTURER,
+    MODEL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -86,6 +89,24 @@ class EcoHomeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
         except EcoHomeApiError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        data = self.data if isinstance(self.data, dict) else {}
+        name = (
+            data.get("deviceNickName")
+            or data.get("device_nick_name")
+            or self.device_code
+        )
+        sw_version = data.get("softVersion") or data.get("soft_version")
+        model = data.get("deviceType") or data.get("device_type") or MODEL
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.device_code)},
+            name=name,
+            manufacturer=MANUFACTURER,
+            model=model,
+            sw_version=sw_version,
+        )
 
     async def async_shutdown(self) -> None:
         await self._session.close()

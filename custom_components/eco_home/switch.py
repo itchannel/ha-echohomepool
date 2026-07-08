@@ -38,6 +38,10 @@ class EcoHomeMasterSwitch(CoordinatorEntity[EcoHomeCoordinator], SwitchEntity):
         self._attr_unique_id = f"{device_code}_master_switch"
 
     @property
+    def device_info(self):
+        return self.coordinator.device_info
+
+    @property
     def is_on(self) -> bool:
         cards = self.coordinator.data.get("cardList", [])
         # On if any non-master card is on

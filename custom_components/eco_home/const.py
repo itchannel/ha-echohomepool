@@ -1,6 +1,8 @@
 """Constants for the Eco-Home integration."""
 
 DOMAIN = "eco_home"
+MANUFACTURER = "Eco-Home"
+MODEL = "Pool Heat Pump"
 PLATFORMS = ["climate", "sensor", "switch", "binary_sensor"]
 
 CLOUD_BASE = "https://ehome.ne01.com"

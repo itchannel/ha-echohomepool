@@ -209,6 +209,10 @@ class EcoHomeStaticSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
         self._attr_unique_id = f"{device_code}_{description.key}"
 
     @property
+    def device_info(self):
+        return self.coordinator.device_info
+
+    @property
     def native_value(self) -> Any:
         if self.entity_description.value_fn:
             return self.entity_description.value_fn(self.coordinator.data)
@@ -253,6 +257,10 @@ class EcoHomeStatusSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
         self._attr_state_class = (
             SensorStateClass.MEASUREMENT if unit else None
         )
+
+    @property
+    def device_info(self):
+        return self.coordinator.device_info
 
     def _find_item(self) -> dict[str, Any] | None:
         for item in self.coordinator.data.get("statusParams", []):

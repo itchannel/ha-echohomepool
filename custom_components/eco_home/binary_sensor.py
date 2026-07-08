@@ -44,6 +44,10 @@ class EcoHomeFaultSensor(CoordinatorEntity[EcoHomeCoordinator], BinarySensorEnti
         self._attr_unique_id = f"{device_code}_fault"
 
     @property
+    def device_info(self):
+        return self.coordinator.device_info
+
+    @property
     def is_on(self) -> bool:
         return bool(self.coordinator.data.get("isFault", False))
 
@@ -73,6 +77,10 @@ class EcoHomeOnlineSensor(CoordinatorEntity[EcoHomeCoordinator], BinarySensorEnt
     def __init__(self, coordinator: EcoHomeCoordinator, device_code: str) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{device_code}_online"
+
+    @property
+    def device_info(self):
+        return self.coordinator.device_info
 
     @property
     def is_on(self) -> bool:

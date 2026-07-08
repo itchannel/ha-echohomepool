@@ -92,6 +92,10 @@ class EcoHomeClimate(CoordinatorEntity[EcoHomeCoordinator], ClimateEntity):
         label = f"Zone {card_id}" if card_id else "Heat Pump"
         self._attr_name = label
 
+    @property
+    def device_info(self):
+        return self.coordinator.device_info
+
     # ------------------------------------------------------------------
     # Helpers to read current card data
     # ------------------------------------------------------------------
