@@ -104,6 +104,32 @@ class EcoHomeApi:
     # Control commands
     # ------------------------------------------------------------------
 
+    async def get_status_params(self, device_code: str) -> list[dict[str, Any]]:
+        """Fetch the module/system status parameter list (type 1 = module status).
+
+        Returns a flat list of {name, value, unit} dicts sourced from the device's
+        live sensor registers — suction temp, plate temps, pump speed, valve states etc.
+        The server returns dynamic labels so we surface them as-is.
+        """
+        try:
+            data = await self._post(
+                f"{CRM_API}/app/deviceInfo/paramListV3",
+                {"device_code": device_code, "type": 1, "is_auto_refresh": False},
+            )
+            result = data.get("object_result") or data.get("objectResult") or []
+            if isinstance(result, list):
+                return result
+        except EcoHomeApiError:
+            pass
+
+        # Fallback to V2
+        data = await self._post(
+            f"{CLOUD_API}/app/deviceInfo/paramListV2.json",
+            {"device_code": device_code, "type": 1, "is_auto_refresh": False},
+        )
+        result = data.get("object_result") or data.get("objectResult") or []
+        return result if isinstance(result, list) else []
+
     async def set_switch(self, device_code: str, value: bool, address: str) -> None:
         """Turn a single zone on or off."""
         await self._post(

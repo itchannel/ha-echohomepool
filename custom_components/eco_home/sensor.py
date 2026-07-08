@@ -1,6 +1,7 @@
 """Sensor entities for Eco-Home pool heat pump."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -14,20 +15,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import CONF_DEVICE_CODE, DOMAIN
 from .coordinator import EcoHomeCoordinator
 
-
-@dataclass
-class EcoHomeSensorDescription(SensorEntityDescription):
-    value_fn: Callable[[dict[str, Any]], Any] | None = None
-
-
-def _card0(data: dict) -> dict:
-    cards = data.get("cardList", [{}])
-    return cards[0] if cards else {}
+_LOGGER = logging.getLogger(__name__)
 
 
 def _parse_float(val: Any) -> float | None:
@@ -37,7 +31,16 @@ def _parse_float(val: Any) -> float | None:
         return None
 
 
-SENSOR_DESCRIPTIONS: list[EcoHomeSensorDescription] = [
+# ---------------------------------------------------------------------------
+# Static sensors from the main device detail poll (cardList)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class EcoHomeSensorDescription(SensorEntityDescription):
+    value_fn: Callable[[dict[str, Any]], Any] | None = None
+
+
+STATIC_SENSORS: list[EcoHomeSensorDescription] = [
     EcoHomeSensorDescription(
         key="current_temp_zone1",
         name="Water Temperature Zone 1",
@@ -65,11 +68,11 @@ SENSOR_DESCRIPTIONS: list[EcoHomeSensorDescription] = [
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        entity_registry_enabled_default=False,
         value_fn=lambda d: _parse_float(
             (d.get("cardList") or [{}, {}])[1].get("curTempMain")
             if len(d.get("cardList", [])) > 1 else None
         ),
-        entity_registry_enabled_default=False,
     ),
     EcoHomeSensorDescription(
         key="set_temp_zone2",
@@ -77,14 +80,65 @@ SENSOR_DESCRIPTIONS: list[EcoHomeSensorDescription] = [
         device_class=SensorDeviceClass.TEMPERATURE,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        entity_registry_enabled_default=False,
         value_fn=lambda d: _parse_float(
             (d.get("cardList") or [{}, {}])[1].get("settingTemp")
             if len(d.get("cardList", [])) > 1 else None
         ),
-        entity_registry_enabled_default=False,
     ),
 ]
 
+
+# ---------------------------------------------------------------------------
+# Keywords that indicate a temperature sensor in the status param name
+# ---------------------------------------------------------------------------
+_TEMP_KEYWORDS = (
+    "temperature", "temp", "suction", "discharge", "exhaust",
+    "coil", "condenser", "evaporator", "ambient", "inlet", "outlet",
+    "water", "defrost", "plate", "effluent", "solar", "hot water",
+    "floor heating", "room",
+)
+
+_SPEED_KEYWORDS = ("speed", "rpm", "frequency", "hz")
+_PRESSURE_KEYWORDS = ("pressure",)
+_BOOL_KEYWORDS = ("valve", "pump", "output", "switch", "status", "state")
+
+
+def _guess_device_class(name: str) -> SensorDeviceClass | None:
+    n = name.lower()
+    if any(k in n for k in _TEMP_KEYWORDS):
+        return SensorDeviceClass.TEMPERATURE
+    if any(k in n for k in _SPEED_KEYWORDS):
+        return None  # no HA device class for rpm/frequency generically
+    if any(k in n for k in _PRESSURE_KEYWORDS):
+        return SensorDeviceClass.PRESSURE
+    return None
+
+
+def _guess_unit(name: str, unit_from_api: str | None) -> str | None:
+    """Prefer whatever unit the API returns, fallback to guessing from name."""
+    if unit_from_api and unit_from_api.strip():
+        u = unit_from_api.strip()
+        # Normalise degree symbols
+        if u in ("℃", "°C", "C"):
+            return UnitOfTemperature.CELSIUS
+        if u in ("℉", "°F", "F"):
+            return UnitOfTemperature.FAHRENHEIT
+        return u
+    n = name.lower()
+    if any(k in n for k in _TEMP_KEYWORDS):
+        return UnitOfTemperature.CELSIUS
+    return None
+
+
+def _slugify(name: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+
+
+# ---------------------------------------------------------------------------
+# Setup
+# ---------------------------------------------------------------------------
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -94,14 +148,53 @@ async def async_setup_entry(
     coordinator: EcoHomeCoordinator = hass.data[DOMAIN][entry.entry_id]
     device_code = entry.data[CONF_DEVICE_CODE]
 
-    async_add_entities(
-        EcoHomeSensor(coordinator, device_code, desc)
-        for desc in SENSOR_DESCRIPTIONS
-    )
+    entities: list[SensorEntity] = [
+        EcoHomeStaticSensor(coordinator, device_code, desc)
+        for desc in STATIC_SENSORS
+    ]
+
+    # Build dynamic status param sensors from the first data snapshot
+    entities += _build_status_sensors(coordinator, device_code)
+
+    async_add_entities(entities)
+
+    # Re-scan for new status params each time data refreshes (handles firmware updates
+    # that expose new registers). CoordinatorEntity already handles updates; we only
+    # add *new* entities here, existing ones update themselves.
+    known_keys: set[str] = {e.unique_id for e in entities if e.unique_id}
+
+    async def _async_add_new_params(_now=None) -> None:
+        new = [
+            e for e in _build_status_sensors(coordinator, device_code)
+            if e.unique_id not in known_keys
+        ]
+        if new:
+            known_keys.update(e.unique_id for e in new if e.unique_id)
+            async_add_entities(new)
+
+    coordinator.async_add_listener(_async_add_new_params)
 
 
-class EcoHomeSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
-    """A sensor reading from the pool heat pump."""
+def _build_status_sensors(
+    coordinator: EcoHomeCoordinator, device_code: str
+) -> list["EcoHomeStatusSensor"]:
+    """Build one sensor per entry in statusParams."""
+    params: list[dict] = coordinator.data.get("statusParams", [])
+    sensors = []
+    for item in params:
+        name = item.get("name") or item.get("content") or item.get("label")
+        if not name:
+            continue
+        sensors.append(EcoHomeStatusSensor(coordinator, device_code, name, item))
+    return sensors
+
+
+# ---------------------------------------------------------------------------
+# Entity classes
+# ---------------------------------------------------------------------------
+
+class EcoHomeStaticSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
+    """A sensor with a fixed value_fn against coordinator.data."""
 
     entity_description: EcoHomeSensorDescription
     _attr_has_entity_name = True
@@ -124,6 +217,72 @@ class EcoHomeSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
 
     @property
     def available(self) -> bool:
-        if not super().available:
-            return False
-        return self.native_value is not None
+        return super().available and self.native_value is not None
+
+
+class EcoHomeStatusSensor(CoordinatorEntity[EcoHomeCoordinator], SensorEntity):
+    """A dynamic sensor sourced from the paramListV2 status query response.
+
+    The API returns a list of {name, value, unit} objects covering live
+    refrigerant circuit sensors: suction temperature, plate heat exchanger temps,
+    ambient temperature, variable-speed pump speed/feedback, valve states, etc.
+    We surface all of them; HA's entity registry disables unknown ones by default
+    so the user can opt in to what they care about.
+    """
+
+    _attr_has_entity_name = True
+    _attr_entity_registry_enabled_default = False  # opt-in — there can be many
+
+    def __init__(
+        self,
+        coordinator: EcoHomeCoordinator,
+        device_code: str,
+        param_name: str,
+        initial_item: dict[str, Any],
+    ) -> None:
+        super().__init__(coordinator)
+        self._param_name = param_name
+        self._device_code = device_code
+
+        slug = _slugify(param_name)
+        self._attr_unique_id = f"{device_code}_status_{slug}"
+        self._attr_name = param_name
+
+        unit = _guess_unit(param_name, initial_item.get("unit"))
+        self._attr_native_unit_of_measurement = unit
+        self._attr_device_class = _guess_device_class(param_name)
+        self._attr_state_class = (
+            SensorStateClass.MEASUREMENT if unit else None
+        )
+
+    def _find_item(self) -> dict[str, Any] | None:
+        for item in self.coordinator.data.get("statusParams", []):
+            name = item.get("name") or item.get("content") or item.get("label")
+            if name == self._param_name:
+                return item
+        return None
+
+    @property
+    def native_value(self) -> Any:
+        item = self._find_item()
+        if item is None:
+            return None
+        raw = item.get("value") or item.get("curValue") or item.get("cur_value")
+        # Try float for numeric sensors, fall back to raw string
+        parsed = _parse_float(raw)
+        return parsed if parsed is not None else raw
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        item = self._find_item() or {}
+        attrs: dict[str, Any] = {}
+        # Expose the register address so advanced users can reference it
+        for key in ("address", "reg_address", "addr"):
+            if key in item:
+                attrs["register_address"] = item[key]
+                break
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        return super().available and self._find_item() is not None

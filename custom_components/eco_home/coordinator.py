@@ -49,15 +49,32 @@ class EcoHomeCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         try:
-            return await self.api.get_device_detail(self.device_code)
+            return await self._fetch_all()
         except EcoHomeApiError as err:
             if "Token expired" in str(err) or "Not authenticated" in str(err):
                 await self._reauthenticate()
                 try:
-                    return await self.api.get_device_detail(self.device_code)
+                    return await self._fetch_all()
                 except EcoHomeApiError as err2:
                     raise UpdateFailed(str(err2)) from err2
             raise UpdateFailed(str(err)) from err
+
+    async def _fetch_all(self) -> dict[str, Any]:
+        """Fetch device detail and status params, merge into one dict."""
+        import asyncio
+        detail, status_params = await asyncio.gather(
+            self.api.get_device_detail(self.device_code),
+            self.api.get_status_params(self.device_code),
+            return_exceptions=True,
+        )
+        if isinstance(detail, Exception):
+            raise detail
+        if isinstance(status_params, Exception):
+            _LOGGER.debug("Status params fetch failed (non-fatal): %s", status_params)
+            status_params = []
+
+        detail["statusParams"] = status_params
+        return detail
 
     async def _reauthenticate(self) -> None:
         try:
